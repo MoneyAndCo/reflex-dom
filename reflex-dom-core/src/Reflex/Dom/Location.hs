@@ -11,6 +11,7 @@ module Reflex.Dom.Location
   , getLocationPath
   , getLocationProtocol
   , getLocationUrl
+  , withLocation
   ) where
 
 import Reflex
