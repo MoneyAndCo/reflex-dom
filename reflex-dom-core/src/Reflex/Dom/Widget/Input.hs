@@ -1,6 +1,7 @@
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE EmptyDataDecls #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs #-}
@@ -37,6 +38,7 @@ import qualified GHCJS.DOM.GlobalEventHandlers as Events
 import GHCJS.DOM.EventM (on)
 import qualified GHCJS.DOM.FileList as FileList
 import GHCJS.DOM.HTMLInputElement (HTMLInputElement)
+import GHCJS.DOM.HTMLSelectElement (HTMLSelectElement)
 import GHCJS.DOM.HTMLTextAreaElement (HTMLTextAreaElement)
 import GHCJS.DOM.Types (MonadJSM, File, uncheckedCastTo)
 import qualified GHCJS.DOM.Types as DOM (HTMLElement(..), EventTarget(..))
@@ -353,17 +355,45 @@ fileInput config = do
 data Dropdown t k
     = Dropdown { _dropdown_value :: Dynamic t k
                , _dropdown_change :: Event t k
+               , _dropdown_hasFocus :: Dynamic t Bool
+               , _dropdown_element :: HTMLSelectElement
                }
 
-data DropdownConfig t k
-   = DropdownConfig { _dropdownConfig_setValue :: Event t k
-                    , _dropdownConfig_attributes :: Dynamic t (Map Text Text)
-                    }
+type family DefaultField a b where
+  DefaultField I b = b
+  DefaultField M b = Maybe b
 
-instance Reflex t => Default (DropdownConfig t k) where
-  def = DropdownConfig { _dropdownConfig_setValue = never
-                       , _dropdownConfig_attributes = constDyn mempty
+data I
+data M
+
+data DropdownConfig' t k f = DropdownConfig
+  { _dropdownConfig_initialValue :: DefaultField f k
+  , _dropdownConfig_options :: DefaultField f (Dynamic t (Map k Text))
+  , _dropdownConfig_setValue :: DefaultField f (Event t k)
+  , _dropdownConfig_attributes :: DefaultField f (Dynamic t (Map Text Text))
+  }
+
+type DropdownConfig t k = DropdownConfig' t k I
+type DropdownConfigDefault t k = DropdownConfig' t k M
+
+instance Reflex t => Default (DropdownConfigDefault t k) where
+  def = DropdownConfig { _dropdownConfig_initialValue = Nothing
+                       , _dropdownConfig_options = Nothing
+                       , _dropdownConfig_setValue = Just never
+                       , _dropdownConfig_attributes = Just (constDyn mempty)
                        }
+
+class DefaultBuilder a where
+  buildDefault :: a M -> Maybe (a I)
+
+instance DefaultBuilder (DropdownConfig' t k) where
+  buildDefault (DropdownConfig a b c d) = DropdownConfig <$> a <*> b <*> c <*> d
+
+-- instance (Reflex t, Default k) => Default (DropdownConfig t k) where
+--   def = DropdownConfig { _dropdownConfig_initialValue = def
+--                        , _dropdownConfig_setValue = never
+--                        , _dropdownConfig_attributes = constDyn mempty
+--                        }
 
 type family DropdownViewEventResultType (en :: EventTag) :: * where
   DropdownViewEventResultType 'ChangeTag = Text
@@ -423,8 +453,9 @@ regularToDropdownViewEventType en r = case en of
 --TODO: We should allow the user to specify an ordering instead of relying on the ordering of the Map
 -- | Create a dropdown box
 --   The first argument gives the initial value of the dropdown; if it is not present in the map of options provided, it will be added with an empty string as its text
-dropdown :: forall k t m. (DomBuilder t m, MonadFix m, MonadHold t m, PostBuild t m, Ord k) => k -> Dynamic t (Map k Text) -> DropdownConfig t k -> m (Dropdown t k)
-dropdown k0 options (DropdownConfig setK attrs) = do
+dropdown :: forall k t m. (DomBuilder t m, MonadFix m, MonadHold t m, PostBuild t m, DomBuilderSpace m ~ GhcjsDomSpace, Ord k)
+         => DropdownConfig t k -> m (Dropdown t k)
+dropdown (DropdownConfig k0 options setK attrs) = do
   optionsWithAddedKeys <- fmap (zipDynWith Map.union options) $ foldDyn Map.union (k0 =: "") $ fmap (=: "") setK
   defaultKey <- holdDyn k0 setK
   let (indexedOptions, ixKeys) = splitDynPure $ ffor optionsWithAddedKeys $ \os ->
@@ -446,7 +477,12 @@ dropdown k0 options (DropdownConfig setK attrs) = do
         guard $ Bimap.memberR k keys
         return k
   dValue <- fmap (zipDynWith readKey ixKeys) $ holdDyn (Just k0) $ leftmost [eChange, fmap Just setK]
-  return $ Dropdown dValue (attachPromptlyDynWith readKey ixKeys eChange)
+  return $
+    Dropdown
+      dValue
+      (attachPromptlyDynWith readKey ixKeys eChange)
+      (_selectElement_hasFocus eRaw)
+      (_selectElement_raw eRaw)
 
 #ifdef USE_TEMPLATE_HASKELL
 concat <$> mapM makeLenses
@@ -458,7 +494,7 @@ concat <$> mapM makeLenses
   , ''RangeInput
   , ''FileInputConfig
   , ''FileInput
-  , ''DropdownConfig
+  , ''DropdownConfig'
   , ''Dropdown
   , ''CheckboxConfig
   , ''Checkbox
